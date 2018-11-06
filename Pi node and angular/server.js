@@ -1,0 +1,86 @@
+var express             = require('express');
+var app                 = express();
+var server              = require('http').createServer(app);  
+var port                = process.env.PORT || 4000;
+var morgan              = require('morgan');
+var request             = require('request');
+var mqtt                = require('mqtt');
+var io                  = require('socket.io').listen(server);
+var bodyParser          = require('body-parser');
+var fs                  = require('fs');
+var router              = express.Router();
+var appRoutes           = require('./routes/api')(router);
+var path                = require('path');
+const { StringDecoder } = require('string_decoder');
+const decoder           = new StringDecoder('utf8');
+
+app.use(morgan('dev'));
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(express.static(__dirname + '/public'));
+app.use('/api', appRoutes);
+
+var client = mqtt.connect('mqtt://real-time-solutions.com:1883');
+
+client.on('connect', function () {
+	client.subscribe('server/');
+});
+
+client.on('message', function (topic, message) {
+	var str = decoder.write(message);
+	var obj = JSON.parse(str);
+
+	if(obj.device == "temperature" || obj.device == "humidity") {
+		io.sockets.emit('sensor',{'topic':String(topic), 'payload':String(message)});
+	}
+
+	fs.readFile('data.json', function(err, content) {
+		if(err) throw err;
+		var parseJson = JSON.parse(content);
+		if(obj.device == "temperature") {
+			parseJson.temperature = obj.value
+		} else if(obj.device == "humidity") {
+			parseJson.humidity = obj.value
+		}
+		
+		fs.writeFile('data.json', JSON.stringify(parseJson), function(err) {
+			if(err) throw err;
+		}); 
+	});
+});
+
+io.sockets.on('connection', function (socket) {
+	socket.on('lights', function (data) {
+		client.publish('arduino/', data)
+	});
+
+	socket.on('pump', function (data) {
+		client.publish('arduino/', data)
+	});
+
+	socket.on('camera', function (data) {
+		io.sockets.emit('camera','start');
+		setTimeout(function() {
+			io.sockets.emit('camera', 'end');
+		}, 6000);
+
+		const exec = require('child_process').exec;
+		var yourscript = exec('sh camera.sh',
+			(error, stdout, stderr) => {
+				console.log(`${stdout}`);
+				console.log(`${stderr}`);
+				if (error) {
+					console.log(error);
+				}
+			});
+		});
+  });
+
+
+app.get('*', function(req, res) {
+	res.sendFile(path.join(__dirname + '/public/app/views/index.html'));
+});
+
+server.listen(port, function() {
+	console.log('Running the Server on port ' + port);
+});
